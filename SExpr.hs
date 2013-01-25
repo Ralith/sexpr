@@ -186,25 +186,26 @@ step st c =
       continue = parseTok st'
       finished = finishTok st' in
   case (tokState st) of
-    STNil ->
-      case c of
-        '(' -> pushTok st' (TLBracket here)
-        ')' -> pushTok st' (TRBracket here)
-        '"' -> continue (STString here StrNormal [] [])
-        '-' -> continue (STInteger here [c])
-        ';' -> continue (STLineComment here [])
-        '#' -> continue (STHash here)
-        _ -> if isSpace c then st'
-             else if isDigit c then continue (STInteger here [c])
-                  else continue (STSymbol here [c])
-    STHash start ->
-        case c of
-          '\\' -> continue (STChar here [])
-          '|' -> continue (STBlockComment here 0 False [])
-          _ -> pushTok st' (TError (ParseError (SourceRange start here) "Unrecognized hash dispatch character"))
-    STLineComment start accum ->
-        if c == '\n' then finished
-        else continue (STLineComment start (c:accum))
+    STNil
+        | isSpace c -> st'
+        | isDigit c -> continue (STInteger here [c])
+        | otherwise ->
+            case c of
+              '(' -> pushTok st' (TLBracket here)
+              ')' -> pushTok st' (TRBracket here)
+              '"' -> continue (STString here StrNormal [] [])
+              '-' -> continue (STInteger here [c])
+              ';' -> continue (STLineComment here [])
+              '#' -> continue (STHash here)
+              _   -> continue (STSymbol here [c])
+    STHash start
+        | c == '\\' -> continue (STChar here [])
+        | c == '|' -> continue (STBlockComment here 0 False [])
+        | otherwise ->
+            pushTok st' (TError (ParseError (SourceRange start here) "Unrecognized hash dispatch character"))
+    STLineComment start accum
+        | c == '\n' -> finished
+        | otherwise -> continue (STLineComment start (c:accum))
     STBlockComment start 0 _ ('|':accum) | c == '#' ->
       -- We don't use the finisher here so we can cleanly prevent a trailing | from appearing
       pushTok st' (TAtom (SourceRange start here) (SEComment (T.pack (reverse accum))))
@@ -216,11 +217,10 @@ step st c =
       continue (STBlockComment start depth False (c:accum))
     STChar _ _ | breaksTok c -> step finished c
     STChar start accum -> continue (STChar start (c:accum))
-    STString start StrNormal errors accum ->
-      case c of
-        '"' -> finished
-        '\\' -> continue (STString start (StrEscaping here) errors accum)
-        _ -> continue (STString start StrNormal [] (c:accum))
+    STString start StrNormal errors accum
+        | c == '"' -> finished
+        | c == '\\' -> continue (STString start (StrEscaping here) errors accum)
+        | otherwise -> continue (STString start StrNormal [] (c:accum))
     STString start (StrEscaping escStart) errors accum ->
       let char x = continue (STString start StrNormal errors (x:accum)) in
       case c of
@@ -232,35 +232,36 @@ step st c =
         _ -> continue (STString start StrNormal
                        ((ParseError (SourceRange escStart here) "Unrecognized escape sequence"):errors)
                        accum)
-    STString start (StrScalarValue escStart isLong valDigits) errors accum ->
-      if length valDigits < (if isLong then 8 else 4) && isHexDigit c
-      then continue (STString start (StrScalarValue escStart isLong (c:valDigits)) errors accum)
-      else let [(value, _)] = (readHex (reverse valDigits)) in
-           if isScalarValue value then step (continue $
-                                             STString start StrNormal errors (chr (fromInteger value):accum)) c
-           else step (continue $ STString start StrNormal
-                      (ParseError (SourceRange escStart here) "Invalid Unicode scalar value" : errors)
-                      accum) c
-    STSymbol _ _ | breaksTok c -> step finished c
-    STSymbol start accum -> continue (STSymbol start (c:accum))
-    STInteger start accum ->
-      case c of
-        '.' -> continue (STDecimal start accum [])
-        'e' -> continue (STExponential start accum [] [])
-        '/' -> continue (STRatio start accum [])
-        _ -> if isDigit c then continue (STInteger start (c:accum))
-             else if breaksTok c then step finished c
-                  else continue (STSymbol start (c:accum))
-    STDecimal start whole fractional ->
-      case c of
-        'e' -> continue (STExponential start whole fractional [])
-        _ -> if isDigit c then continue (STDecimal start whole (c:fractional))
-             else if breaksTok c then step finished c
-                  else continue (STSymbol start (c:fractional ++ "." ++ whole))
-    STExponential start whole fractional power ->
-      if isDigit c then continue (STExponential start whole fractional (c:power))
-      else if breaksTok c then step finished c
-           else continue (STSymbol start (c:power ++ "e" ++ fractional ++ "." ++ whole))
-    STRatio start num denom | isDigit c -> continue (STRatio start num (c:denom))
-    STRatio _ _ _ | breaksTok c -> step finished c
-    STRatio start num denom -> continue (STSymbol start (c:denom ++ "/" ++ num))
+    STString start (StrScalarValue escStart isLong valDigits) errors accum
+        | length valDigits < (if isLong then 8 else 4) && isHexDigit c ->
+           continue (STString start (StrScalarValue escStart isLong (c:valDigits)) errors accum)
+        | otherwise ->
+            let [(value, _)] = (readHex (reverse valDigits)) in
+            if isScalarValue value then step (continue $
+                                              STString start StrNormal errors (chr (fromInteger value):accum)) c
+            else step (continue $ STString start StrNormal
+                       (ParseError (SourceRange escStart here) "Invalid Unicode scalar value" : errors)
+                       accum) c
+    STSymbol start accum
+        | breaksTok c -> step finished c
+        | otherwise -> continue (STSymbol start (c:accum))
+    STInteger start accum
+        | c == '.' -> continue (STDecimal start accum [])
+        | c == 'e' -> continue (STExponential start accum [] [])
+        | c == '/' -> continue (STRatio start accum [])
+        | isDigit c -> continue (STInteger start (c:accum))
+        | breaksTok c -> step finished c
+        | otherwise -> continue (STSymbol start (c:accum))
+    STDecimal start whole fractional
+        | c == 'e' -> continue (STExponential start whole fractional [])
+        | isDigit c -> continue (STDecimal start whole (c:fractional))
+        | breaksTok c -> step finished c
+        | otherwise -> continue (STSymbol start (c:fractional ++ "." ++ whole))
+    STExponential start whole fractional power
+        | isDigit c -> continue (STExponential start whole fractional (c:power))
+        | breaksTok c -> step finished c
+        | otherwise -> continue (STSymbol start (c:power ++ "e" ++ fractional ++ "." ++ whole))
+    STRatio start num denom
+        | isDigit c -> continue (STRatio start num (c:denom))
+        | breaksTok c -> step finished c
+        | otherwise -> continue (STSymbol start (c:denom ++ "/" ++ num))

@@ -258,10 +258,9 @@ step st c =
              else if breaksTok c then step finished c
                   else continue (STSymbol start (c:fractional ++ "." ++ whole))
     STExponential start whole fractional power ->
-      case c of
-        _ -> if isDigit c then continue (STExponential start whole fractional (c:power))
-             else if breaksTok c then step finished c
-                  else continue (STSymbol start (c:power ++ "e" ++ fractional ++ "." ++ whole))
+        if isDigit c then continue (STExponential start whole fractional (c:power))
+        else if breaksTok c then step finished c
+             else continue (STSymbol start (c:power ++ "e" ++ fractional ++ "." ++ whole))
     STRatio start num denom | isDigit c -> continue (STRatio start num (c:denom))
     STRatio _ _ _ | breaksTok c -> step finished c
     STRatio start num denom -> continue (STSymbol start (c:denom ++ "/" ++ num))

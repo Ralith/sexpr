@@ -2,16 +2,17 @@ module SExpr where
 
 import qualified Data.Text as T
 import Data.List
+import Data.Ratio
 import Data.Char
 import Numeric
 
-data Atom = SESymbol T.Text | SEInteger Integer | SEDecimal Rational | SEChar T.Text | SEString T.Text | SEComment T.Text
+data Atom = SESymbol T.Text | SEInteger Integer | SERational Rational | SEChar T.Text | SEString T.Text | SEComment T.Text
 
 instance Show Atom where
   show (SESymbol n) = T.unpack n
   show (SEChar c) = "#\\" ++ T.unpack c
   show (SEInteger i) = show i
-  show (SEDecimal d) = show d
+  show (SERational r) = show r
   show (SEString s) = '"' : T.unpack s ++ "\""
   show (SEComment c) = "#|" ++ T.unpack c ++ "|#"
 
@@ -87,6 +88,7 @@ data TokState = STNil
               | STInteger SourceLoc [Char]
               | STDecimal SourceLoc [Char] [Char] -- whole fractional
               | STExponential SourceLoc [Char] [Char] [Char] -- whole fractional power
+              | STRatio SourceLoc [Char] [Char] -- num denom
               | STLineComment SourceLoc [Char]
               | STBlockComment SourceLoc Integer Bool [Char] -- integer is depth, bool is whether last # was a terminator
               | STHash SourceLoc
@@ -133,15 +135,18 @@ finishTok st =
       [TAtom (SourceRange start here) (SEInteger (read (reverse accum) :: Integer))]
     STDecimal start whole fractional ->
       [TAtom (SourceRange start here)
-       (SEDecimal (buildRational
-                   (reverse whole)
-                   (reverse fractional) []))]
+       (SERational (buildRational
+                    (reverse whole)
+                    (reverse fractional) []))]
     STExponential start whole fractional power ->
       [TAtom (SourceRange start here)
-       (SEDecimal (buildRational
-                   (reverse whole)
-                   (reverse fractional)
-                   (reverse power)))]
+       (SERational (buildRational
+                    (reverse whole)
+                    (reverse fractional)
+                    (reverse power)))]
+    STRatio start num denom ->
+      [TAtom (SourceRange start here)
+       (SERational (read (reverse num) % read (reverse denom)))]
     STLineComment start accum ->
         [TAtom (SourceRange start here) (SEComment (T.pack (reverse accum)))]
     STBlockComment start _ _ accum ->
@@ -154,6 +159,8 @@ incomplete st =
           Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete string literal"
       STBlockComment start _ _ _ ->
           Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete block comment"
+      STRatio start _ [] ->
+          Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete ratio"
       _ -> Nothing
 
 -- Tokenize a complete set of textual s-expressions
@@ -234,13 +241,13 @@ step st c =
            else step (continue $ STString start StrNormal
                       (ParseError (SourceRange escStart here) "Invalid Unicode scalar value" : errors)
                       accum) c
-    STSymbol start accum ->
-      if breaksTok c then step finished c
-      else continue (STSymbol start (c:accum))
+    STSymbol _ _ | breaksTok c -> step finished c
+    STSymbol start accum -> continue (STSymbol start (c:accum))
     STInteger start accum ->
       case c of
         '.' -> continue (STDecimal start accum [])
         'e' -> continue (STExponential start accum [] [])
+        '/' -> continue (STRatio start accum [])
         _ -> if isDigit c then continue (STInteger start (c:accum))
              else if breaksTok c then step finished c
                   else continue (STSymbol start (c:accum))
@@ -255,3 +262,6 @@ step st c =
         _ -> if isDigit c then continue (STExponential start whole fractional (c:power))
              else if breaksTok c then step finished c
                   else continue (STSymbol start (c:power ++ "e" ++ fractional ++ "." ++ whole))
+    STRatio start num denom | isDigit c -> continue (STRatio start num (c:denom))
+    STRatio _ _ _ | breaksTok c -> step finished c
+    STRatio start num denom -> continue (STSymbol start (c:denom ++ "/" ++ num))

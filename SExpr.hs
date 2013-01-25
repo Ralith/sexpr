@@ -66,7 +66,7 @@ takeList (SourceRange start _) xs@(_:_) accum = let (expr, end, unparsed) = pars
                                           takeList (SourceRange start end) unparsed (expr:accum)
 takeList range [] accum =
   (reverse $ SEError (ParseError range "Unterminated list"):accum
-  , undefined, [])
+  , range, [])
 
 buildRational :: [Char] -> [Char] -> [Char] -> Rational
 buildRational whole fractional power =

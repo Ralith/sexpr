@@ -34,7 +34,7 @@ newchar (SourceLoc line col char) = SourceLoc line (col+1) (char+1)
 data SExpr = SEList SourceRange [SExpr] | SEAtom SourceRange Atom | SEError ParseError
 
 instance Show SExpr where
-  show (SEList _ xs) = '(' : intercalate " " (map show xs) ++ ")"
+  show (SEList _ xs) = '(' : unwords (map show xs) ++ ")"
   show (SEAtom _ atom) = show atom
   show (SEError e) = show e
 
@@ -63,36 +63,36 @@ parse (TLBracket start : xs) = let (body, range@(SourceRange _ end), unparsed) =
 parse (TRBracket end : xs) = (SEError (ParseError (SourceRange end end) "Orphaned close parenthesis"), end, xs)
 
 takeList :: SourceRange -> [Token] -> [SExpr] -> ([SExpr], SourceRange, [Token])
-takeList (SourceRange start _) (TRBracket end : xs) accum = (reverse accum, (SourceRange start end), xs)
+takeList (SourceRange start _) (TRBracket end : xs) accum = (reverse accum, SourceRange start end, xs)
 takeList (SourceRange start _) xs@(_:_) accum = let (expr, end, unparsed) = parse xs in
                                           takeList (SourceRange start end) unparsed (expr:accum)
 takeList range [] accum =
   (reverse $ SEError (ParseError range "Unterminated list"):accum
   , range, [])
 
-buildRational :: [Char] -> [Char] -> [Char] -> Rational
+buildRational :: String -> String -> String -> Rational
 buildRational whole fractional power =
   let w = read whole :: Integer
       f = if null fractional then 0 else read fractional :: Integer
       e = if null power then 0 else read power :: Integer in
-  (fromInteger w + fromInteger f / 10 ^ (length fractional)) * 10 ^ e
+  (fromInteger w + fromInteger f / 10 ^ length fractional) * 10 ^ e
 
 data StringMode = StrNormal
                 | StrEscaping SourceLoc
-                | StrScalarValue SourceLoc Bool [Char] -- bool is long flag
+                | StrScalarValue SourceLoc Bool String -- bool is long flag
                 deriving Show
 
 data TokState = STNil
-              | STString SourceLoc StringMode [ParseError] [Char]
-              | STSymbol SourceLoc [Char]
-              | STInteger SourceLoc [Char]
-              | STDecimal SourceLoc [Char] [Char] -- whole fractional
-              | STExponential SourceLoc [Char] [Char] [Char] -- whole fractional power
-              | STRatio SourceLoc [Char] [Char] -- num denom
-              | STLineComment SourceLoc [Char]
-              | STBlockComment SourceLoc Integer Bool [Char] -- integer is depth, bool is whether last # was a terminator
+              | STString SourceLoc StringMode [ParseError] String
+              | STSymbol SourceLoc String
+              | STInteger SourceLoc String
+              | STDecimal SourceLoc String String -- whole fractional
+              | STExponential SourceLoc String String String -- whole fractional power
+              | STRatio SourceLoc String String -- num denom
+              | STLineComment SourceLoc String
+              | STBlockComment SourceLoc Integer Bool String -- integer is depth, bool is whether last # was a terminator
               | STHash SourceLoc
-              | STChar SourceLoc [Char]
+              | STChar SourceLoc String
               deriving Show
 
 data ParseState = ParseState { tokAccum :: [Token]
@@ -122,10 +122,10 @@ finishTok st =
     STNil -> []
     STHash start -> [TError (ParseError (SourceRange start (newchar start)) "Orphaned hash")]
     STString start StrNormal errors accum ->
-      (TAtom (SourceRange start here) (SEString (T.pack (reverse accum))))
+      TAtom (SourceRange start here) (SEString (T.pack (reverse accum)))
       : map TError errors
     STString start _ errors _ ->
-      (TError (ParseError (SourceRange start here) "Incomplete escape sequence"))
+      TError (ParseError (SourceRange start here) "Incomplete escape sequence")
       : map TError errors
     STSymbol start accum ->
       [TAtom (SourceRange start here) (SESymbol (T.pack (reverse accum)))]
@@ -156,7 +156,7 @@ finishTok st =
 
 incomplete :: ParseState -> Maybe ParseError
 incomplete st =
-    case (tokState st) of
+    case tokState st of
       STString start _ _ _ ->
           Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete string literal"
       STBlockComment start _ _ _ ->
@@ -175,7 +175,7 @@ parseAll text = helper (tokenize text)
     where
       helper :: [Token] -> [SExpr]
       helper [] = []
-      helper ts = let (e, _, ts') = parse ts in e : (helper ts')
+      helper ts = let (e, _, ts') = parse ts in e : helper ts'
 
 isScalarValue :: Integer -> Bool
 isScalarValue x = x >= 0 && x < 0xD800
@@ -184,7 +184,7 @@ isScalarValue x = x >= 0 && x < 0xD800
 breaksTok :: Char -> Bool
 breaksTok c = isSpace c || elem c others
     where
-      others = ['(', ')', ';', '#']
+      others = "();#"
 
 step :: ParseState -> Char -> ParseState
 step st c =
@@ -192,7 +192,7 @@ step st c =
       st' = st { lastLoc = here }
       continue = parseTok st'
       finished = finishTok st' in
-  case (tokState st) of
+  case tokState st of
     STNil
         | isSpace c -> st'
         | isDigit c -> continue (STInteger here [c])
@@ -237,7 +237,7 @@ step st c =
         'u' -> continue (STString start (StrScalarValue (newchar here) False []) errors accum)
         'U' -> continue (STString start (StrScalarValue (newchar here) True []) errors accum)
         _ -> continue (STString start StrNormal
-                       ((ParseError (SourceRange escStart here) "Unrecognized escape sequence"):errors)
+                       (ParseError (SourceRange escStart here) "Unrecognized escape sequence":errors)
                        accum)
     STString start (StrScalarValue escStart isLong valDigits) errors accum
         | length valDigits < (if isLong then 8 else 4) && isHexDigit c ->

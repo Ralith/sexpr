@@ -170,6 +170,13 @@ tokenize text = let st = T.foldl step initialState text in
                   Just e -> reverse (TError e : (tokAccum . finishTok $ st))
                   Nothing -> reverse . tokAccum . finishTok $ st
 
+parseAll :: T.Text -> [SExpr]
+parseAll text = helper (tokenize text)
+    where
+      helper :: [Token] -> [SExpr]
+      helper [] = []
+      helper ts = let (e, _, ts') = parse ts in e : (helper ts')
+
 isScalarValue :: Integer -> Bool
 isScalarValue x = x >= 0 && x < 0xD800
                   || x >= 0xE000 && x < 0x110000

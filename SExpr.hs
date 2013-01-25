@@ -51,6 +51,7 @@ instance Show Token where
   show (TAtom _ a) = show a
   show (TError err) = show err
   
+-- Returns a single s-sexpression, the location at which parsing completed, and any remaining, unparsed tokens
 parse :: [Token] -> (SExpr, SourceLoc, [Token])
 parse [] = (SEError (ParseError (SourceRange (SourceLoc 0 0 0) (SourceLoc 0 0 0)) "Empty input"), SourceLoc 0 0 0, [])
 parse (TError e@(ParseError (SourceRange _ end) _) : xs) = (SEError e, end, xs)
@@ -155,6 +156,7 @@ incomplete st =
           Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete block comment"
       _ -> Nothing
 
+-- Tokenize a complete set of textual s-expressions
 tokenize :: T.Text -> [Token]
 tokenize text = let st = T.foldl step initialState text in
                 case incomplete st of

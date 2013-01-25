@@ -5,13 +5,15 @@ import Data.List
 import Data.Char
 import Numeric
 
-data Atom = SESymbol T.Text | SEInteger Integer | SEDecimal Rational | SEString T.Text
+data Atom = SESymbol T.Text | SEInteger Integer | SEDecimal Rational | SEChar T.Text | SEString T.Text | SEComment T.Text
 
 instance Show Atom where
-  show (SESymbol n) = show n
+  show (SESymbol n) = T.unpack n
+  show (SEChar c) = "#\\" ++ T.unpack c
   show (SEInteger i) = show i
   show (SEDecimal d) = show d
   show (SEString s) = '"' : T.unpack s ++ "\""
+  show (SEComment c) = "#|" ++ T.unpack c ++ "|#"
 
 data SourceLoc = SourceLoc Int Int Int
 data SourceRange = SourceRange SourceLoc SourceLoc
@@ -73,9 +75,9 @@ buildRational whole fractional power =
       e = if null power then 0 else read power :: Integer in
   (fromInteger w + fromInteger f / 10 ^ (length fractional)) * 10 ^ e
 
-data StringMode = Normal
-                | Escaping SourceLoc
-                | ScalarValue SourceLoc Bool [Char] -- bool is long flag
+data StringMode = StrNormal
+                | StrEscaping SourceLoc
+                | StrScalarValue SourceLoc Bool [Char] -- bool is long flag
                 deriving Show
 
 data TokState = STNil
@@ -84,6 +86,10 @@ data TokState = STNil
               | STInteger SourceLoc [Char]
               | STDecimal SourceLoc [Char] [Char] -- whole fractional
               | STExponential SourceLoc [Char] [Char] [Char] -- whole fractional power
+              | STLineComment SourceLoc [Char]
+              | STBlockComment SourceLoc Integer Bool [Char] -- integer is depth, bool is whether last # was a terminator
+              | STHash SourceLoc
+              | STChar SourceLoc [Char]
               deriving Show
 
 data ParseState = ParseState { tokAccum :: [Token]
@@ -111,7 +117,8 @@ finishTok st =
   foldl pushTok st $
   case tokState st of
     STNil -> []
-    STString start Normal errors accum ->
+    STHash start -> [TError (ParseError (SourceRange start (newchar start)) "Orphaned hash")]
+    STString start StrNormal errors accum ->
       (TAtom (SourceRange start here) (SEString (T.pack (reverse accum))))
       : map TError errors
     STString start _ errors _ ->
@@ -119,6 +126,8 @@ finishTok st =
       : map TError errors
     STSymbol start accum ->
       [TAtom (SourceRange start here) (SESymbol (T.pack (reverse accum)))]
+    STChar start accum ->
+      [TAtom (SourceRange start here) (SEChar (T.pack (reverse accum)))]
     STInteger start accum ->
       [TAtom (SourceRange start here) (SEInteger (read (reverse accum) :: Integer))]
     STDecimal start whole fractional ->
@@ -132,17 +141,34 @@ finishTok st =
                    (reverse whole)
                    (reverse fractional)
                    (reverse power)))]
+    STLineComment start accum ->
+        [TAtom (SourceRange start here) (SEComment (T.pack (reverse accum)))]
+    STBlockComment start _ _ accum ->
+        [TAtom (SourceRange start here) (SEComment (T.pack (reverse accum)))]
+
+incomplete :: ParseState -> Maybe ParseError
+incomplete st =
+    case (tokState st) of
+      STString start _ _ _ ->
+          Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete string literal"
+      STBlockComment start _ _ _ ->
+          Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete block comment"
+      _ -> Nothing
 
 tokenize :: T.Text -> [Token]
 tokenize text = let st = T.foldl step initialState text in
-  case tokState st of
-    STString start _ _ _ -> reverse (TError (ParseError (SourceRange start (lastLoc st))
-                                             "Incomplete string literal") : tokAccum (finishTok st))
-    _ -> reverse . tokAccum . finishTok $ st
+                case incomplete st of
+                  Just e -> reverse (TError e : (tokAccum . finishTok $ st))
+                  Nothing -> reverse . tokAccum . finishTok $ st
 
 isScalarValue :: Integer -> Bool
 isScalarValue x = x >= 0 && x < 0xD800
                   || x >= 0xE000 && x < 0x110000
+
+breaksTok :: Char -> Bool
+breaksTok c = isSpace c || elem c others
+    where
+      others = ['(', ')', ';', '#']
 
 step :: ParseState -> Char -> ParseState
 step st c =
@@ -155,66 +181,75 @@ step st c =
       case c of
         '(' -> pushTok st' (TLBracket here)
         ')' -> pushTok st' (TRBracket here)
-        '"' -> continue (STString here Normal [] [])
+        '"' -> continue (STString here StrNormal [] [])
         '-' -> continue (STInteger here [c])
+        ';' -> continue (STLineComment here [])
+        '#' -> continue (STHash here)
         _ -> if isSpace c then st'
              else if isDigit c then continue (STInteger here [c])
                   else continue (STSymbol here [c])
-    STString start Normal errors accum ->
+    STHash start ->
+        case c of
+          '\\' -> continue (STChar here [])
+          '|' -> continue (STBlockComment here 0 False [])
+          _ -> pushTok st' (TError (ParseError (SourceRange start here) "Unrecognized hash dispatch character"))
+    STLineComment start accum ->
+        if c == '\n' then finished
+        else continue (STLineComment start (c:accum))
+    STBlockComment start 0 _ ('|':accum) | c == '#' ->
+      -- We don't use the finisher here so we can cleanly prevent a trailing | from appearing
+      pushTok st' (TAtom (SourceRange start here) (SEComment (T.pack (reverse accum))))
+    STBlockComment start depth _ accum@('|':_) | c == '#' ->
+      continue (STBlockComment start (depth-1) True (c:accum))
+    STBlockComment start depth False accum@('#':_) | c == '|' ->
+      continue (STBlockComment start (depth+1) False (c:accum))
+    STBlockComment start depth _ accum ->
+      continue (STBlockComment start depth False (c:accum))
+    STChar _ _ | breaksTok c -> step finished c
+    STChar start accum -> continue (STChar start (c:accum))
+    STString start StrNormal errors accum ->
       case c of
         '"' -> finished
-        '\\' -> continue (STString start (Escaping here) errors accum)
-        _ -> continue (STString start Normal [] (c:accum))
-    STString start (Escaping escStart) errors accum ->
-      let char x = continue (STString start Normal errors (x:accum)) in
+        '\\' -> continue (STString start (StrEscaping here) errors accum)
+        _ -> continue (STString start StrNormal [] (c:accum))
+    STString start (StrEscaping escStart) errors accum ->
+      let char x = continue (STString start StrNormal errors (x:accum)) in
       case c of
         'r' -> char '\r'
         'n' -> char '\n'
         't' -> char '\t'
-        'u' -> continue (STString start (ScalarValue (newchar here) False []) errors accum)
-        'U' -> continue (STString start (ScalarValue (newchar here) True []) errors accum)
-        _ -> continue (STString start Normal
+        'u' -> continue (STString start (StrScalarValue (newchar here) False []) errors accum)
+        'U' -> continue (STString start (StrScalarValue (newchar here) True []) errors accum)
+        _ -> continue (STString start StrNormal
                        ((ParseError (SourceRange escStart here) "Unrecognized escape sequence"):errors)
                        accum)
-    STString start (ScalarValue escStart isLong valDigits) errors accum ->
+    STString start (StrScalarValue escStart isLong valDigits) errors accum ->
       if length valDigits < (if isLong then 8 else 4) && isHexDigit c
-      then continue (STString start (ScalarValue escStart isLong (c:valDigits)) errors accum)
+      then continue (STString start (StrScalarValue escStart isLong (c:valDigits)) errors accum)
       else let [(value, _)] = (readHex (reverse valDigits)) in
            if isScalarValue value then step (continue $
-                                             STString start Normal errors (chr (fromInteger value):accum)) c
-           else step (continue $ STString start Normal
+                                             STString start StrNormal errors (chr (fromInteger value):accum)) c
+           else step (continue $ STString start StrNormal
                       (ParseError (SourceRange escStart here) "Invalid Unicode scalar value" : errors)
                       accum) c
     STSymbol start accum ->
-      let done = step finished c in
-      case c of
-        '(' -> done
-        ')' -> done
-        _ -> if isSpace c then done
-             else continue (STSymbol start (c:accum))
+      if breaksTok c then step finished c
+      else continue (STSymbol start (c:accum))
     STInteger start accum ->
-      let done = step finished c in
       case c of
-        '(' -> done
-        ')' -> done
         '.' -> continue (STDecimal start accum [])
         'e' -> continue (STExponential start accum [] [])
         _ -> if isDigit c then continue (STInteger start (c:accum))
-             else if isSpace c then done
+             else if breaksTok c then step finished c
                   else continue (STSymbol start (c:accum))
     STDecimal start whole fractional ->
-      let done = step finished c in
       case c of
-        '(' -> done
-        ')' -> done
         'e' -> continue (STExponential start whole fractional [])
         _ -> if isDigit c then continue (STDecimal start whole (c:fractional))
-             else if isSpace c then done
+             else if breaksTok c then step finished c
                   else continue (STSymbol start (c:fractional ++ "." ++ whole))
     STExponential start whole fractional power ->
-      let done = step finished c in
       case c of
-        '(' -> done
-        ')' -> done
         _ -> if isDigit c then continue (STExponential start whole fractional (c:power))
-             else continue (STSymbol start (c:power ++ "e" ++ fractional ++ "." ++ whole))
+             else if breaksTok c then step finished c
+                  else continue (STSymbol start (c:power ++ "e" ++ fractional ++ "." ++ whole))

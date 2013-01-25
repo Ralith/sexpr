@@ -34,7 +34,7 @@ newchar (SourceLoc line col char) = SourceLoc line (col+1) (char+1)
 data SExpr = SEList SourceRange [SExpr] | SEAtom SourceRange Atom | SEError ParseError
 
 instance Show SExpr where
-  show (SEList _ xs) = '(' : intercalate "," (map show xs) ++ ")"
+  show (SEList _ xs) = '(' : intercalate " " (map show xs) ++ ")"
   show (SEAtom _ atom) = show atom
   show (SEError e) = show e
 

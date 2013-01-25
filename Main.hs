@@ -1,7 +1,8 @@
 module Main where
 
-import Data.Text.Encoding as E
+import qualified Data.Text.Encoding as E
 import qualified Data.ByteString as B
+import qualified Data.Text as T
 import System.Environment
 
 import SExpr
@@ -11,4 +12,4 @@ main = do
   as <- getArgs
   case as of
     (file:_) -> fmap (parseAll . E.decodeUtf8) (B.readFile file) >>= print
-    [] -> putStr "<filename>"
+    [] -> B.interact (E.encodeUtf8 . T.pack . show . parseAll . E.decodeUtf8)

@@ -23,10 +23,13 @@ instance Show SourceLoc where
   show (SourceLoc line col _) = show line ++ ":" ++ show col
 
 instance Show SourceRange where
-  show (SourceRange start end) = show start ++ " - " ++ show end
+  show (SourceRange a@(SourceLoc lineA colA _) b@(SourceLoc lineB colB _))
+      | lineA /= lineB = show a ++ " - " ++ show b
+      | colB - colA > 1 = show lineA ++ ":" ++ show colA ++ "-" ++ show colB
+      | otherwise = show lineA ++ ":" ++ show colA
 
 newline :: SourceLoc -> SourceLoc
-newline (SourceLoc line _ char) = SourceLoc (line+1) 0 (char+1)
+newline (SourceLoc line _ char) = SourceLoc (line+1) 1 (char+1)
 
 newchar :: SourceLoc -> SourceLoc
 newchar (SourceLoc line col char) = SourceLoc line (col+1) (char+1)
@@ -46,7 +49,7 @@ instance Show ParseError where
 prettyError :: T.Text -> T.Text -> ParseError -> T.Text
 prettyError file source (ParseError r@(SourceRange (SourceLoc lineA colA _) (SourceLoc lineB colB _)) message)
     | lineA == lineB =
-        T.concat [ file, ":", T.pack (show lineA ++ ":" ++ show colA ++ "-" ++ show colB ++ ": ")
+        T.concat [ file, ":", T.pack (show r), ": "
                  , message, "\n"
                  , T.splitOn "\n"  source !! (lineA - 1), "\n"
                  , T.replicate (colA - 1) " ", T.replicate (colB - colA) "~"
@@ -77,7 +80,7 @@ parse (TAtom range@(SourceRange _ end) atom : xs) = (SEAtom range atom, end, xs)
 parse (TLBracket start : xs) = let (body, range@(SourceRange _ end), unparsed) =
                                      takeList (SourceRange start start) xs [] in
   (SEList range body, end, unparsed)
-parse (TRBracket end : xs) = (SEError (ParseError (SourceRange end end) "Orphaned close parenthesis"), end, xs)
+parse (TRBracket end : xs) = (SEError (ParseError (SourceRange end (newchar end)) "Orphaned close parenthesis"), end, xs)
 
 takeList :: SourceRange -> [Token] -> [SExpr] -> ([SExpr], SourceRange, [Token])
 takeList (SourceRange start _) (TRBracket end : xs) accum = (reverse accum, SourceRange start end, xs)
@@ -115,7 +118,6 @@ data TokState = STNil
 data ParseState = ParseState { tokAccum :: [Token]
                              , tokState :: TokState
                              , currentLoc :: SourceLoc
-                             , lastLoc :: SourceLoc
                              }
                 deriving Show
 
@@ -123,7 +125,6 @@ initialState :: ParseState
 initialState = ParseState { tokAccum = []
                           , tokState = STNil
                           , currentLoc = SourceLoc 1 1 0
-                          , lastLoc = SourceLoc 1 0 0
                           }
 
 pushTok :: ParseState -> Token -> ParseState
@@ -177,9 +178,9 @@ incomplete :: ParseState -> Maybe ParseError
 incomplete st =
     case tokState st of
       STString start _ _ _ ->
-          Just $ ParseError (SourceRange start (currentLoc st)) "Incomplete string literal"
+          Just $ ParseError (SourceRange start (currentLoc st)) "Unterminated string literal"
       STBlockComment start _ _ _ ->
-          Just $ ParseError (SourceRange start (currentLoc st)) "Incomplete block comment"
+          Just $ ParseError (SourceRange start (currentLoc st)) "Unterminated block comment"
       _ -> Nothing
 
 -- Tokenize a complete set of textual s-expressions
@@ -206,8 +207,8 @@ breaksTok c = isSpace c || elem c others
       others = "();#"
 
 updateLoc :: ParseState -> Char -> ParseState
-updateLoc st '\n' = st { lastLoc = currentLoc st, currentLoc = newline (currentLoc st) }
-updateLoc st _    = st { lastLoc = currentLoc st, currentLoc = newchar (currentLoc st) }
+updateLoc st '\n' = st { currentLoc = newline (currentLoc st) }
+updateLoc st _    = st { currentLoc = newchar (currentLoc st) }
 
 step :: ParseState -> Char -> ParseState
 step st c = updateLoc (step' st c) c
@@ -215,7 +216,6 @@ step st c = updateLoc (step' st c) c
 step' :: ParseState -> Char -> ParseState
 step' st c =
   let here = currentLoc st
-      prev = lastLoc st
       continue = parseTok st
       finished = finishTok st in
   case tokState st of
@@ -234,8 +234,10 @@ step' st c =
     STHash start
         | c == '\\' -> continue (STChar here [])
         | c == '|' -> continue (STBlockComment here 0 False [])
+        | isSpace c ->
+            pushTok st (TError (ParseError (SourceRange start here) "Orphaned hash"))
         | otherwise ->
-            pushTok st (TError (ParseError (SourceRange start here) "Unrecognized hash dispatch character"))
+            pushTok st (TError (ParseError (SourceRange start (newchar here)) "Unrecognized hash dispatch character"))
     STLineComment start accum
         | c == '\n' -> finished
         | otherwise -> continue (STLineComment start (c:accum))

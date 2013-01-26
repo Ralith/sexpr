@@ -49,7 +49,7 @@ prettyError file source (ParseError r@(SourceRange (SourceLoc lineA colA _) (Sou
         T.concat [ file, ":", T.pack (show lineA ++ ":" ++ show colA ++ "-" ++ show colB ++ ": ")
                  , message, "\n"
                  , T.splitOn "\n"  source !! (lineA - 1), "\n"
-                 , T.replicate (colA - 1) " ", T.replicate (colB - colA + 1) "~"
+                 , T.replicate (colA - 1) " ", T.replicate (colB - colA) "~"
                  ]
     | otherwise =
         let body@(lineOne:_) = take (lineB - lineA + 1) (drop (lineA - 1) (T.splitOn "\n" source)) in
@@ -264,7 +264,7 @@ step' st c =
         'u' -> continue (STString start (StrScalarValue here False []) errors accum)
         'U' -> continue (STString start (StrScalarValue here True []) errors accum)
         _ -> continue (STString start StrNormal
-                       (ParseError (SourceRange escStart here) "Unrecognized escape sequence":errors)
+                       (ParseError (SourceRange escStart (newchar here)) "Unrecognized escape sequence":errors)
                        accum)
     STString start (StrScalarValue escStart isLong valDigits) errors accum
         | length valDigits < (if isLong then 8 else 4) && isHexDigit c ->
@@ -278,7 +278,7 @@ step' st c =
             if isScalarValue value
             then step' (continue $ STString start StrNormal errors (chr (fromInteger value):accum)) c
             else step' (continue $ STString start StrNormal
-                       (ParseError (SourceRange escStart prev) "Invalid Unicode scalar value" : errors)
+                       (ParseError (SourceRange escStart here) "Invalid Unicode scalar value" : errors)
                         accum) c
     STSymbol start accum
         | breaksTok c -> step' finished c

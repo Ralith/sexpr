@@ -114,6 +114,7 @@ data TokState = STNil
 
 data ParseState = ParseState { tokAccum :: [Token]
                              , tokState :: TokState
+                             , currentLoc :: SourceLoc
                              , lastLoc :: SourceLoc
                              }
                 deriving Show
@@ -121,7 +122,8 @@ data ParseState = ParseState { tokAccum :: [Token]
 initialState :: ParseState
 initialState = ParseState { tokAccum = []
                           , tokState = STNil
-                          , lastLoc = SourceLoc 1 1 0
+                          , currentLoc = SourceLoc 1 1 0
+                          , lastLoc = SourceLoc 1 0 0
                           }
 
 pushTok :: ParseState -> Token -> ParseState
@@ -133,7 +135,7 @@ parseTok s t = s { tokState = t }
 -- Finish the accumulated token
 finishTok :: ParseState -> ParseState
 finishTok st =
-  let here = lastLoc st in
+  let here = currentLoc st in
   foldl pushTok st $
   case tokState st of
     STNil -> []
@@ -175,9 +177,9 @@ incomplete :: ParseState -> Maybe ParseError
 incomplete st =
     case tokState st of
       STString start _ _ _ ->
-          Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete string literal"
+          Just $ ParseError (SourceRange start (currentLoc st)) "Incomplete string literal"
       STBlockComment start _ _ _ ->
-          Just $ ParseError (SourceRange start (lastLoc st)) "Incomplete block comment"
+          Just $ ParseError (SourceRange start (currentLoc st)) "Incomplete block comment"
       _ -> Nothing
 
 -- Tokenize a complete set of textual s-expressions
@@ -204,15 +206,16 @@ breaksTok c = isSpace c || elem c others
       others = "();#"
 
 updateLoc :: ParseState -> Char -> ParseState
-updateLoc st '\n' = st { lastLoc = newline (lastLoc st) }
-updateLoc st _    = st { lastLoc = newchar (lastLoc st) }
+updateLoc st '\n' = st { lastLoc = currentLoc st, currentLoc = newline (currentLoc st) }
+updateLoc st _    = st { lastLoc = currentLoc st, currentLoc = newchar (currentLoc st) }
 
 step :: ParseState -> Char -> ParseState
 step st c = updateLoc (step' st c) c
 
 step' :: ParseState -> Char -> ParseState
 step' st c =
-  let here = lastLoc st
+  let here = currentLoc st
+      prev = lastLoc st
       continue = parseTok st
       finished = finishTok st in
   case tokState st of
@@ -257,20 +260,24 @@ step' st c =
         'r' -> char '\r'
         'n' -> char '\n'
         't' -> char '\t'
-        'u' -> continue (STString start (StrScalarValue (newchar here) False []) errors accum)
-        'U' -> continue (STString start (StrScalarValue (newchar here) True []) errors accum)
+        'u' -> continue (STString start (StrScalarValue here False []) errors accum)
+        'U' -> continue (STString start (StrScalarValue here True []) errors accum)
         _ -> continue (STString start StrNormal
                        (ParseError (SourceRange escStart here) "Unrecognized escape sequence":errors)
                        accum)
     STString start (StrScalarValue escStart isLong valDigits) errors accum
         | length valDigits < (if isLong then 8 else 4) && isHexDigit c ->
            continue (STString start (StrScalarValue escStart isLong (c:valDigits)) errors accum)
+        | null valDigits ->
+            step' (continue $ STString start StrNormal
+                   (ParseError (SourceRange escStart here) "Missing Unicode scalar value" : errors)
+                   accum) c
         | otherwise ->
             let [(value, _)] = (readHex (reverse valDigits)) in
             if isScalarValue value then step' (continue $
                                               STString start StrNormal errors (chr (fromInteger value):accum)) c
             else step' (continue $ STString start StrNormal
-                       (ParseError (SourceRange escStart here) "Invalid Unicode scalar value" : errors)
+                       (ParseError (SourceRange escStart prev) "Invalid Unicode scalar value" : errors)
                        accum) c
     STSymbol start accum
         | breaksTok c -> step' finished c

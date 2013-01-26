@@ -149,7 +149,7 @@ finishTok st =
     STChar start accum ->
       [TAtom (SourceRange start here) (SEChar (T.pack (reverse accum)))]
     STInteger start accum ->
-      [TAtom (SourceRange start here) (SEInteger (read (reverse accum) :: Integer))]
+      [TAtom (SourceRange start here) (SEInteger (read (reverse accum)))]
     STDecimal start whole fractional ->
       [TAtom (SourceRange start here)
        (SERational (buildRational
@@ -250,7 +250,7 @@ step' st c =
     STString start StrNormal errors accum
         | c == '"' -> finished
         | c == '\\' -> continue (STString start (StrEscaping here) errors accum)
-        | otherwise -> continue (STString start StrNormal [] (c:accum))
+        | otherwise -> continue (STString start StrNormal errors (c:accum))
     STString start (StrEscaping escStart) errors accum ->
       let char x = continue (STString start StrNormal errors (x:accum)) in
       case c of

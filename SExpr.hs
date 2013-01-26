@@ -248,8 +248,9 @@ step' st c =
       continue (STBlockComment start (depth+1) False (c:accum))
     STBlockComment start depth _ accum ->
       continue (STBlockComment start depth False (c:accum))
-    STChar _ _ | breaksTok c -> step' finished c
-    STChar start accum -> continue (STChar start (c:accum))
+    STChar start accum
+        | breaksTok c -> step' finished c
+        | otherwise -> continue (STChar start (c:accum))
     STString start StrNormal errors accum
         | c == '"' -> finished
         | c == '\\' -> continue (STString start (StrEscaping here) errors accum)
@@ -274,11 +275,11 @@ step' st c =
                    accum) c
         | otherwise ->
             let [(value, _)] = (readHex (reverse valDigits)) in
-            if isScalarValue value then step' (continue $
-                                              STString start StrNormal errors (chr (fromInteger value):accum)) c
+            if isScalarValue value
+            then step' (continue $ STString start StrNormal errors (chr (fromInteger value):accum)) c
             else step' (continue $ STString start StrNormal
                        (ParseError (SourceRange escStart prev) "Invalid Unicode scalar value" : errors)
-                       accum) c
+                        accum) c
     STSymbol start accum
         | breaksTok c -> step' finished c
         | otherwise -> continue (STSymbol start (c:accum))

@@ -48,11 +48,11 @@ prettyError file source (ParseError r@(SourceRange (SourceLoc lineA colA _) (Sou
     | lineA == lineB =
         T.concat [ file, ":", T.pack (show lineA ++ ":" ++ show colA ++ "-" ++ show colB ++ ": ")
                  , message, "\n"
-                 , T.lines source !! (lineA - 1), "\n"
-                 , T.replicate (colA - 1) " ", T.replicate (colB - colA) "~"
+                 , T.splitOn "\n"  source !! (lineA - 1), "\n"
+                 , T.replicate (colA - 1) " ", T.replicate (colB - colA + 1) "~"
                  ]
     | otherwise =
-        let body@(lineOne:_) = take (lineB - lineA + 1) (drop (lineA - 1) (T.lines source)) in
+        let body@(lineOne:_) = take (lineB - lineA + 1) (drop (lineA - 1) (T.splitOn "\n" source)) in
         T.concat $ [ file, ":", T.pack (show r), ": ", message, "\n"
                    , T.replicate (colA - 1) " ", "V"
                    , T.replicate (T.length lineOne - colA) "~", "\n"

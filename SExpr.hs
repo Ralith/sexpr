@@ -1,7 +1,7 @@
+{-# LANGUAGE OverloadedStrings #-}
 module SExpr where
 
 import qualified Data.Text as T
-import Data.List
 import Data.Ratio
 import Data.Char
 import Numeric
@@ -38,10 +38,27 @@ instance Show SExpr where
   show (SEAtom _ atom) = show atom
   show (SEError e) = show e
 
-data ParseError = ParseError SourceRange String
+data ParseError = ParseError SourceRange T.Text
 
 instance Show ParseError where
-  show (ParseError range string) = show range ++ ": " ++ string
+  show (ParseError range message) = "#<" ++ show range ++ ": " ++ T.unpack message ++ ">"
+
+prettyError :: T.Text -> T.Text -> ParseError -> T.Text
+prettyError file source (ParseError r@(SourceRange (SourceLoc lineA colA _) (SourceLoc lineB colB _)) message)
+    | lineA == lineB =
+        T.concat [ file, ":", T.pack (show lineA ++ ":" ++ show colA ++ "-" ++ show colB ++ ": ")
+                 , message, "\n"
+                 , T.lines source !! (lineA - 1), "\n"
+                 , T.replicate (colA - 1) " ", T.replicate (colB - colA) "~"
+                 ]
+    | otherwise =
+        let body@(lineOne:_) = take (lineB - lineA + 1) (drop (lineA - 1) (T.lines source)) in
+        T.concat $ [ file, ":", T.pack (show r), ": ", message, "\n"
+                   , T.replicate (colA - 1) " ", "V"
+                   , T.replicate (T.length lineOne - colA) "~", "\n"
+                   , T.intercalate "\n" body, "\n"
+                   , T.replicate (colB - 1) "~", "^"
+                   ]
 
 data Token = TLBracket SourceLoc | TRBracket SourceLoc | TAtom SourceRange Atom
            | TError ParseError
@@ -54,7 +71,7 @@ instance Show Token where
   
 -- Returns a single s-sexpression, the location at which parsing completed, and any remaining, unparsed tokens
 parse :: [Token] -> (SExpr, SourceLoc, [Token])
-parse [] = (SEError (ParseError (SourceRange (SourceLoc 0 0 0) (SourceLoc 0 0 0)) "Empty input"), SourceLoc 0 0 0, [])
+parse [] = (SEError (ParseError (SourceRange (SourceLoc 1 1 0) (SourceLoc 1 1 0)) "Empty input"), SourceLoc 1 1 0, [])
 parse (TError e@(ParseError (SourceRange _ end) _) : xs) = (SEError e, end, xs)
 parse (TAtom range@(SourceRange _ end) atom : xs) = (SEAtom range atom, end, xs)
 parse (TLBracket start : xs) = let (body, range@(SourceRange _ end), unparsed) =
@@ -104,7 +121,7 @@ data ParseState = ParseState { tokAccum :: [Token]
 initialState :: ParseState
 initialState = ParseState { tokAccum = []
                           , tokState = STNil
-                          , lastLoc = SourceLoc 0 0 0
+                          , lastLoc = SourceLoc 1 1 0
                           }
 
 pushTok :: ParseState -> Token -> ParseState
@@ -186,20 +203,26 @@ breaksTok c = isSpace c || elem c others
     where
       others = "();#"
 
+updateLoc :: ParseState -> Char -> ParseState
+updateLoc st '\n' = st { lastLoc = newline (lastLoc st) }
+updateLoc st _    = st { lastLoc = newchar (lastLoc st) }
+
 step :: ParseState -> Char -> ParseState
-step st c =
-  let here = if c == '\n' then newline (lastLoc st) else newchar (lastLoc st)
-      st' = st { lastLoc = here }
-      continue = parseTok st'
-      finished = finishTok st' in
+step st c = updateLoc (step' st c) c
+
+step' :: ParseState -> Char -> ParseState
+step' st c =
+  let here = lastLoc st
+      continue = parseTok st
+      finished = finishTok st in
   case tokState st of
     STNil
-        | isSpace c -> st'
+        | isSpace c -> st
         | isDigit c -> continue (STInteger here [c])
         | otherwise ->
             case c of
-              '(' -> pushTok st' (TLBracket here)
-              ')' -> pushTok st' (TRBracket here)
+              '(' -> pushTok st (TLBracket here)
+              ')' -> pushTok st (TRBracket here)
               '"' -> continue (STString here StrNormal [] [])
               '-' -> continue (STInteger here [c])
               ';' -> continue (STLineComment here [])
@@ -209,20 +232,20 @@ step st c =
         | c == '\\' -> continue (STChar here [])
         | c == '|' -> continue (STBlockComment here 0 False [])
         | otherwise ->
-            pushTok st' (TError (ParseError (SourceRange start here) "Unrecognized hash dispatch character"))
+            pushTok st (TError (ParseError (SourceRange start here) "Unrecognized hash dispatch character"))
     STLineComment start accum
         | c == '\n' -> finished
         | otherwise -> continue (STLineComment start (c:accum))
     STBlockComment start 0 _ ('|':accum) | c == '#' ->
       -- We don't use the finisher here so we can cleanly prevent a trailing | from appearing
-      pushTok st' (TAtom (SourceRange start here) (SEComment (T.pack (reverse accum))))
+      pushTok st (TAtom (SourceRange start here) (SEComment (T.pack (reverse accum))))
     STBlockComment start depth _ accum@('|':_) | c == '#' ->
       continue (STBlockComment start (depth-1) True (c:accum))
     STBlockComment start depth False accum@('#':_) | c == '|' ->
       continue (STBlockComment start (depth+1) False (c:accum))
     STBlockComment start depth _ accum ->
       continue (STBlockComment start depth False (c:accum))
-    STChar _ _ | breaksTok c -> step finished c
+    STChar _ _ | breaksTok c -> step' finished c
     STChar start accum -> continue (STChar start (c:accum))
     STString start StrNormal errors accum
         | c == '"' -> finished
@@ -244,31 +267,31 @@ step st c =
            continue (STString start (StrScalarValue escStart isLong (c:valDigits)) errors accum)
         | otherwise ->
             let [(value, _)] = (readHex (reverse valDigits)) in
-            if isScalarValue value then step (continue $
+            if isScalarValue value then step' (continue $
                                               STString start StrNormal errors (chr (fromInteger value):accum)) c
-            else step (continue $ STString start StrNormal
+            else step' (continue $ STString start StrNormal
                        (ParseError (SourceRange escStart here) "Invalid Unicode scalar value" : errors)
                        accum) c
     STSymbol start accum
-        | breaksTok c -> step finished c
+        | breaksTok c -> step' finished c
         | otherwise -> continue (STSymbol start (c:accum))
     STInteger start accum
         | c == '.' -> continue (STDecimal start accum [])
         | c == 'e' -> continue (STExponential start accum [] [])
         | c == '/' -> continue (STRatio start accum [])
         | isDigit c -> continue (STInteger start (c:accum))
-        | breaksTok c -> step finished c
+        | breaksTok c -> step' finished c
         | otherwise -> continue (STSymbol start (c:accum))
     STDecimal start whole fractional
         | c == 'e' -> continue (STExponential start whole fractional [])
         | isDigit c -> continue (STDecimal start whole (c:fractional))
-        | breaksTok c -> step finished c
+        | breaksTok c -> step' finished c
         | otherwise -> continue (STSymbol start (c:fractional ++ "." ++ whole))
     STExponential start whole fractional power
         | isDigit c -> continue (STExponential start whole fractional (c:power))
-        | breaksTok c -> step finished c
+        | breaksTok c -> step' finished c
         | otherwise -> continue (STSymbol start (c:power ++ "e" ++ fractional ++ "." ++ whole))
     STRatio start num denom
         | isDigit c -> continue (STRatio start num (c:denom))
-        | breaksTok c -> step finished c
+        | breaksTok c -> step' finished c
         | otherwise -> continue (STSymbol start (c:denom ++ "/" ++ num))

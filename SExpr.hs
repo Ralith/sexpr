@@ -142,10 +142,10 @@ finishTok st =
     STHash start -> [TError (ParseError (SourceRange start (newchar start)) "Orphaned hash")]
     STString start StrNormal errors accum ->
       TAtom (SourceRange start here) (SEString (T.pack (reverse accum)))
-      : map TError errors
+      : map TError (reverse errors)
     STString start _ errors _ ->
       TError (ParseError (SourceRange start here) "Incomplete escape sequence")
-      : map TError errors
+      : map TError (reverse errors)
     STSymbol start accum ->
       [TAtom (SourceRange start here) (SESymbol (T.pack (reverse accum)))]
     STChar start accum ->

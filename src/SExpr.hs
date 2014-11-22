@@ -1,5 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
-module SExpr where
+module SExpr ( Atom(..)
+             , SourceLoc(..)
+             , SourceRange(..)
+             , SExpr(..)
+             , ParseError(..)
+             , prettyError
+             , tokenize
+             , parse
+             , parseAll
+             ) where
 
 import qualified Data.Text as T
 import Data.Ratio
@@ -71,7 +80,7 @@ instance Show Token where
   show (TRBracket _) = ")"
   show (TAtom _ a) = show a
   show (TError err) = show err
-  
+
 -- Returns a single s-sexpression, the location at which parsing completed, and any remaining, unparsed tokens
 parse :: [Token] -> (SExpr, SourceLoc, [Token])
 parse [] = (SEError (ParseError (SourceRange (SourceLoc 1 1 0) (SourceLoc 1 1 0)) "Empty input"), SourceLoc 1 1 0, [])
